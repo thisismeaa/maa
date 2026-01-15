@@ -1,101 +1,130 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Teachable Machine Image Model (Mobile)</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"> <!-- ทำ responsive -->
-  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@latest/dist/teachablemachine-image.min.js"></script>
+  <meta charset="utf-8">
+  <title>ESP32 GPIO5 Control</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
-    body {
-      font-family: Arial, sans-serif;
-      text-align: center;
-      margin: 0;
-      padding: 0;
+    body { 
+      font-family: Arial, sans-serif; 
+      text-align: center; 
+      margin-top: 50px; 
+      background: #f0f0f0; 
     }
-    #webcam-container {
-      max-width: 100%;
-      margin: 10px auto;
+    .container { 
+      display: inline-block; 
+      padding: 30px; 
+      background: white; 
+      border-radius: 15px; 
+      box-shadow: 0 4px 10px rgba(0,0,0,0.1); 
     }
-    video {
-      max-width: 100%;
-      height: auto;
+    button { 
+      padding: 20px 40px; 
+      margin: 10px; 
+      font-size: 18px; 
+      border: none; 
+      border-radius: 10px; 
+      cursor: pointer; 
+      transition: 0.3s; 
     }
-    #label-container {
-      margin: 10px;
-      font-size: 1.2em;
-    }
-    button {
-      padding: 10px 20px;
-      font-size: 1em;
-      margin: 5px;
+    .on { background: #4CAF50; color: white; }
+    .off { background: #f44336; color: white; }
+    .status { 
+      margin-top: 20px; 
+      font-size: 24px; 
+      font-weight: bold; 
     }
   </style>
 </head>
 <body>
-  <div>Teachable Machine Image Model (Mobile)</div>
-  <button type="button" onclick="init('environment')">Start (Back Camera)</button>
-  <button type="button" onclick="init('user')">Start (Front Camera)</button>
-  <button type="button" onclick="stop()">Stop</button>
-  <div id="webcam-container"></div>
-  <div id="label-container"></div>
 
-  <script type="text/javascript">
-    const URL = "https://teachablemachine.withgoogle.com/models/hGmOXhF9c/";
+<div class="container">
+  <h1>ESP32 GPIO5 Control</h1>
+  <button id="btnOn" class="on">ON</button>
+  <button id="btnOff" class="off">OFF</button>
+  <div class="status" id="status">Connecting...</div>
+</div>
 
-    let model, webcam, labelContainer, maxPredictions;
+<!-- MQTT.js -->
+<script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+<script>
+  // Topic ตรงกับ ESP32
+  const TOPIC_CMD = "esp32/gpio5/cmd";
+  const TOPIC_STATUS = "esp32/gpio5/status";
 
-    async function init(facingMode) {
-      const modelURL = URL + "model.json";
-      const metadataURL = URL + "metadata.json";
+  const clientId = 'web_' + Math.random().toString(16).substr(2, 8);
 
-      model = await tmImage.load(modelURL, metadataURL);
-      maxPredictions = model.getTotalClasses();
+  // HiveMQ Public Broker - wss:// + port 8884 + path /mqtt
+  const client = mqtt.connect('wss://broker.hivemq.com:8884/mqtt', {
+    clientId: clientId,
+    keepalive: 60,
+    reconnectPeriod: 1000,
+    connectTimeout: 30 * 1000
+  });
 
-      // ตั้งค่า Webcam สำหรับมือถือ โดยระบุ facingMode
-      webcam = new tmImage.Webcam(224, 224, false); // ใช้ 224x224 เหมือนเดิม
-      try {
-        await webcam.setup({ facingMode: facingMode }); // เลือกกล้องหน้า (user) หรือหลัง (environment)
-        await webcam.play();
-        if (!webcam.canvas) {
-          throw new Error("Webcam canvas is not initialized");
-        }
-        console.log("Webcam initialized, width:", webcam.canvas.width, "facingMode:", facingMode);
-        window.requestAnimationFrame(loop);
-      } catch (e) {
-        console.error("Webcam setup failed:", e);
-        document.getElementById("label-container").innerText = "Error: " + e.message;
-        return;
-      }
+  let currentState = null;
+  const statusEl = document.getElementById('status');
 
-      document.getElementById("webcam-container").appendChild(webcam.canvas);
-      labelContainer = document.getElementById("label-container");
-      labelContainer.innerHTML = ""; // ล้างผลลัพธ์เก่า
-      for (let i = 0; i < maxPredictions; i++) {
-        labelContainer.appendChild(document.createElement("div"));
-      }
+  client.on('connect', () => {
+    console.log('Connected to HiveMQ!');
+    client.subscribe(TOPIC_STATUS);
+    statusEl.textContent = 'Connected';
+    statusEl.style.color = 'blue';
+
+    // ขอสถานะทันที
+    client.publish(TOPIC_CMD, 'status');
+  });
+
+  client.on('message', (topic, message) => {
+    const msg = message.toString().trim();
+    console.log('Received:', topic, msg);
+
+    if (msg === '1') currentState = true;
+    else if (msg === '0') currentState = false;
+
+    updateUI();
+  });
+
+  client.on('error', (err) => {
+    console.error('MQTT Error:', err);
+    statusEl.textContent = 'Error!';
+    statusEl.style.color = 'red';
+  });
+
+  client.on('offline', () => {
+    statusEl.textContent = 'Offline';
+    statusEl.style.color = 'orange';
+  });
+
+  // ปุ่ม
+  document.getElementById('btnOn').onclick = () => send('1');
+  document.getElementById('btnOff').onclick = () => send('0');
+
+  function send(cmd) {
+    if (client.connected) {
+      client.publish(TOPIC_CMD, cmd);
+      statusEl.textContent = 'Sending...';
+    } else {
+      statusEl.textContent = 'Not Connected!';
     }
+  }
 
-    async function loop() {
-      webcam.update();
-      await predict();
-      window.requestAnimationFrame(loop);
+  function updateUI() {
+    if (currentState === true) {
+      document.getElementById('btnOn').style.opacity = '1';
+      document.getElementById('btnOff').style.opacity = '0.6';
+      statusEl.textContent = 'LED: ON';
+      statusEl.style.color = 'green';
+    } else if (currentState === false) {
+      document.getElementById('btnOn').style.opacity = '0.6';
+      document.getElementById('btnOff').style.opacity = '1';
+      statusEl.textContent = 'LED: OFF';
+      statusEl.style.color = 'red';
     }
+  }
+</script>
 
-    async function predict() {
-      const prediction = await model.predict(webcam.canvas);
-      for (let i = 0; i < maxPredictions; i++) {
-        const classPrediction = prediction[i].className + ": " + prediction[i].probability.toFixed(2);
-        labelContainer.childNodes[i].innerHTML = classPrediction;
-      }
-    }
-
-    function stop() {
-      if (webcam) {
-        webcam.stop();
-        document.getElementById("webcam-container").innerHTML = '';
-        document.getElementById("label-container").innerHTML = '';
-      }
-    }
-  </script>
 </body>
+
 </html>
+
